@@ -50,7 +50,10 @@ fn can_support_injected_nodes() {
     let node_id = graph.new_node_id(file);
     let _preexisting_node = graph.add_scope_node(node_id, true).unwrap();
 
-    let language = StackGraphLanguage::from_str(tree_sitter_python::language(), tsg).unwrap();
+    let language = StackGraphLanguage::<
+        tree_sitter_graph::graph::GraphErazing<tree_sitter_graph::graph::TSNodeErazing>,
+    >::from_str(tree_sitter_python::language(), tsg)
+    .unwrap();
     let mut builder = language.builder_into_stack_graph(&mut graph, file, python);
 
     let mut globals = Variables::new();

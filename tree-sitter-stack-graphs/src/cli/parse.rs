@@ -8,6 +8,7 @@
 use anyhow::anyhow;
 use clap::Args;
 use clap::ValueHint;
+use tree_sitter_graph::MyTSNode;
 use std::path::Path;
 use std::path::PathBuf;
 use tree_sitter::Parser;
@@ -40,14 +41,14 @@ impl ParseArgs {
                 None => return Err(anyhow!("No stack graph language found")),
             };
         let source = file_reader.get(&self.source_path)?;
-        let tree = parse(lang, &self.source_path, source)?;
+        let tree = parse(&lang, &self.source_path, source)?;
         print_tree(tree);
         Ok(())
     }
 }
 
 pub(super) fn parse(
-    language: tree_sitter::Language,
+    language: &tree_sitter::Language,
     path: &Path,
     source: &str,
 ) -> anyhow::Result<tree_sitter::Tree> {
@@ -104,7 +105,7 @@ pub(super) fn print_tree(tree: tree_sitter::Tree) {
                 if let Some(field_name) = cursor.field_name() {
                     print!("{}: ", field_name);
                 }
-                print_node(node, false);
+                _print_node(node, false);
                 needs_newline = true;
             }
             if cursor.goto_first_child() {
@@ -119,7 +120,23 @@ pub(super) fn print_tree(tree: tree_sitter::Tree) {
     println!("");
 }
 
-pub(super) fn print_node(node: tree_sitter::Node, close: bool) {
+pub(super) fn _print_node(node: tree_sitter::Node, close: bool) {
+    let start = node.start_position();
+    let end = node.end_position();
+    print!(
+        "({} [{}:{} - {}:{}]",
+        node.kind(),
+        start.row + 1,
+        start.column + 1,
+        end.row + 1,
+        end.column + 1
+    );
+    if close {
+        print!(")");
+    }
+}
+
+pub(super) fn print_node(node: MyTSNode, close: bool) {
     let start = node.start_position();
     let end = node.end_position();
     print!(

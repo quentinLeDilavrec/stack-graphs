@@ -16,11 +16,14 @@ pub mod path {
     use tree_sitter_graph::functions::Function;
     use tree_sitter_graph::functions::Functions;
     use tree_sitter_graph::functions::Parameters;
-    use tree_sitter_graph::graph::Graph;
+    use tree_sitter_graph::graph::Erzd;
     use tree_sitter_graph::graph::Value;
     use tree_sitter_graph::ExecutionError;
 
-    pub fn add_path_functions(functions: &mut Functions) {
+    pub fn add_path_functions<G:Erzd>(functions: &mut Functions<G>)
+    where
+        Functions<G>: 'static,
+    {
         functions.add(
             "path-dir".into(),
             path_fn(|p| p.parent().map(|s| s.as_os_str().to_os_string())),
@@ -45,7 +48,7 @@ pub mod path {
         functions.add("path-split".into(), PathSplit);
     }
 
-    pub fn path_fn<F>(f: F) -> impl Function
+    pub fn path_fn<F, G:Erzd>(f: F) -> impl Function<G>
     where
         F: Fn(&Path) -> Option<std::ffi::OsString>,
     {
@@ -56,14 +59,13 @@ pub mod path {
     where
         F: Fn(&Path) -> Option<std::ffi::OsString>;
 
-    impl<F> Function for PathFn<F>
+    impl<F, G: Erzd> Function<G> for PathFn<F>
     where
         F: Fn(&Path) -> Option<std::ffi::OsString>,
     {
         fn call(
             &self,
-            _graph: &mut Graph,
-            _source: &str,
+            _graph: &mut G::Original<'_>,
             parameters: &mut dyn Parameters,
         ) -> Result<Value, ExecutionError> {
             let path = PathBuf::from(parameters.param()?.into_string()?);
@@ -82,11 +84,10 @@ pub mod path {
 
     struct PathJoin;
 
-    impl Function for PathJoin {
+    impl<G: Erzd> Function<G> for PathJoin {
         fn call(
             &self,
-            _graph: &mut Graph,
-            _source: &str,
+            _graph: &mut G::Original<'_>,
             parameters: &mut dyn Parameters,
         ) -> Result<Value, ExecutionError> {
             let mut path = PathBuf::new();
@@ -100,11 +101,10 @@ pub mod path {
 
     struct PathSplit;
 
-    impl Function for PathSplit {
+    impl<G: Erzd> Function<G> for PathSplit {
         fn call(
             &self,
-            _graph: &mut Graph,
-            _source: &str,
+            _graph: &mut G::Original<'_>,
             parameters: &mut dyn Parameters,
         ) -> Result<Value, ExecutionError> {
             let path = PathBuf::from(parameters.param()?.into_string()?);

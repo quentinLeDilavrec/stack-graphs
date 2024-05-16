@@ -20,7 +20,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
 use tree_sitter::Language;
-use tree_sitter_graph::ast::File as TsgFile;
+use tree_sitter_graph::graph::Erzd;
+use tree_sitter_graph::graph::GraphErazing;
+use tree_sitter_graph::graph::TSNodeErazing;
+type TsgFile = tree_sitter_graph::ast::File<tree_sitter::Query>;
 use tree_sitter_graph::Variables;
 use tree_sitter_loader::Config as TsConfig;
 use tree_sitter_loader::LanguageConfiguration as TSLanguageConfiguration;
@@ -36,12 +39,14 @@ pub static DEFAULT_BUILTINS_PATHS: Lazy<Vec<LoadPath>> =
     Lazy::new(|| vec![LoadPath::Grammar("queries/builtins".into())]);
 
 /// Data type that holds all information to recognize and analyze files for a language
-pub struct LanguageConfiguration {
+pub struct LanguageConfiguration<
+    G: Erzd = tree_sitter_graph::graph::GraphErazing<tree_sitter_graph::graph::TSNodeErazing>,
+> {
     pub language: Language,
     pub scope: Option<String>,
     pub content_regex: Option<Regex>,
     pub file_types: Vec<String>,
-    pub sgl: StackGraphLanguage,
+    pub sgl: StackGraphLanguage<G>,
     pub builtins: StackGraph,
     pub special_files: FileAnalyzers,
     /// Can be set to true if the stack graph rules ensure that there can be no similar
@@ -51,32 +56,36 @@ pub struct LanguageConfiguration {
     pub no_similar_paths_in_file: bool,
 }
 
-impl LanguageConfiguration {
+impl<'tree> LanguageConfiguration<GraphErazing<TSNodeErazing>> {
     /// Build a language configuration from tsg and builtins sources. The tsg path
     /// is kept for informational use only, see [`StackGraphLanguage::from_source`][].
-    pub fn from_sources<'a>(
+    pub fn from_sources(
         language: Language,
         scope: Option<String>,
         content_regex: Option<Regex>,
         file_types: Vec<String>,
         tsg_path: PathBuf,
-        tsg_source: &'a str,
-        builtins_source: Option<(PathBuf, &'a str)>,
+        tsg_source: &'tree str,
+        builtins_source: Option<(PathBuf, &'tree str)>,
         builtins_config: Option<&str>,
         cancellation_flag: &dyn CancellationFlag,
-    ) -> Result<Self, LoadError<'a>> {
-        let sgl = StackGraphLanguage::from_source(language, tsg_path.clone(), tsg_source).map_err(
-            |err| LoadError::SglParse {
-                inner: err,
-                tsg_path,
-                tsg: Cow::from(tsg_source),
-            },
-        )?;
+    ) -> Result<Self, LoadError<'tree>> {
+        let mut sgl: StackGraphLanguage =
+            StackGraphLanguage::from_source(language.clone(), tsg_path.clone(), tsg_source)
+                .map_err(|err| LoadError::SglParse {
+                    inner: err,
+                    tsg_path,
+                    tsg: Cow::from(tsg_source),
+                })?;
+        sgl.functions_mut().add_graph_functions();
         let mut builtins = StackGraph::new();
         if let Some((builtins_path, builtins_source)) = builtins_source {
             let mut builtins_globals = Variables::new();
             if let Some(builtins_config) = builtins_config {
-                Loader::load_globals_from_config_str(builtins_config, &mut builtins_globals)?;
+                Loader::<GraphErazing<TSNodeErazing>>::load_globals_from_config_str(
+                    builtins_config,
+                    &mut builtins_globals,
+                )?;
             }
             let file = builtins.add_file("<builtins>").unwrap();
             sgl.build_stack_graph_into(
@@ -108,10 +117,10 @@ impl LanguageConfiguration {
 
     // Extracted from tree_sitter_loader::Loader::language_configuration_for_file_name
     fn best_for_file<'a>(
-        languages: &'a Vec<LanguageConfiguration>,
+        languages: &'a Vec<LanguageConfiguration<GraphErazing<TSNodeErazing>>>,
         path: &Path,
         content: &mut dyn ContentProvider,
-    ) -> std::io::Result<Option<&'a LanguageConfiguration>> {
+    ) -> std::io::Result<Option<&'a LanguageConfiguration<GraphErazing<TSNodeErazing>>>> {
         let mut best_score = -1isize;
         let mut best = None;
         for language in languages {
@@ -204,14 +213,16 @@ impl LoadPath {
 /// are always optional.
 ///
 /// Previously loaded languages are cached in the loader, so subsequent loads are fast.
-pub struct Loader(LoaderImpl);
+pub struct Loader<
+    G: Erzd = tree_sitter_graph::graph::GraphErazing<tree_sitter_graph::graph::TSNodeErazing>,
+>(LoaderImpl<G>);
 
-enum LoaderImpl {
-    Paths(PathLoader),
-    Provided(LanguageConfigurationsLoader),
+enum LoaderImpl<G: Erzd> {
+    Paths(PathLoader<G>),
+    Provided(LanguageConfigurationsLoader<G>),
 }
 
-impl Loader {
+impl<G: Erzd> Loader<G> {
     pub fn from_paths(
         paths: Vec<PathBuf>,
         scope: Option<String>,
@@ -236,7 +247,7 @@ impl Loader {
     ) -> Result<Self, LoadError<'static>> {
         Ok(Self(LoaderImpl::Paths(PathLoader {
             loader: SupplementedTsLoader::new()?,
-            paths: PathLoader::config_paths(config)?,
+            paths: PathLoader::<G>::config_paths(config)?,
             scope,
             tsg_paths,
             builtins_paths,
@@ -245,7 +256,7 @@ impl Loader {
     }
 
     pub fn from_language_configurations(
-        configurations: Vec<LanguageConfiguration>,
+        configurations: Vec<LanguageConfiguration<G>>,
         scope: Option<String>,
     ) -> Result<Self, LoadError<'static>> {
         let configurations = configurations
@@ -257,6 +268,43 @@ impl Loader {
         })))
     }
 
+    fn load_globals_from_config(
+        conf: &Ini,
+        globals: &mut Variables,
+    ) -> Result<(), LoadError<'static>> {
+        if let Some(globals_section) = conf.section(Some("globals")) {
+            for (name, value) in globals_section.iter() {
+                globals.add(name.into(), value.into()).map_err(|_| {
+                    LoadError::Reader(
+                        format!("Duplicate global variable {} in config", name).into(),
+                    )
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn load_globals_from_config_path(
+        path: &Path,
+        globals: &mut Variables,
+    ) -> Result<(), LoadError<'static>> {
+        let conf = Ini::load_from_file(path)?;
+        Self::load_globals_from_config(&conf, globals)
+    }
+
+    pub fn load_globals_from_config_str(
+        config: &str,
+        globals: &mut Variables,
+    ) -> Result<(), LoadError<'static>> {
+        if config.is_empty() {
+            return Ok(());
+        }
+        let conf = Ini::load_from_str(config).map_err(ini::Error::Parse)?;
+        Self::load_globals_from_config(&conf, globals)
+    }
+}
+
+impl Loader<GraphErazing<TSNodeErazing>> {
     /// Load a Tree-sitter language for the given file. Loading is based on the loader configuration and the given file path.
     /// Most users should use [`Self::load_for_file`], but this method can be useful if only the underlying Tree-sitter language
     /// is necessary, as it will not attempt to load the TSG file.
@@ -279,30 +327,12 @@ impl Loader {
         path: &Path,
         content: &mut dyn ContentProvider,
         cancellation_flag: &dyn CancellationFlag,
-    ) -> Result<FileLanguageConfigurations<'a>, LoadError<'static>> {
+    ) -> Result<FileLanguageConfigurations<'a, GraphErazing<TSNodeErazing>>, LoadError<'static>>
+    {
         match &mut self.0 {
             LoaderImpl::Paths(loader) => loader.load_for_file(path, content, cancellation_flag),
             LoaderImpl::Provided(loader) => loader.load_for_file(path, content),
         }
-    }
-
-    pub fn load_globals_from_config_path(
-        path: &Path,
-        globals: &mut Variables,
-    ) -> Result<(), LoadError<'static>> {
-        let conf = Ini::load_from_file(path)?;
-        Self::load_globals_from_config(&conf, globals)
-    }
-
-    pub fn load_globals_from_config_str(
-        config: &str,
-        globals: &mut Variables,
-    ) -> Result<(), LoadError<'static>> {
-        if config.is_empty() {
-            return Ok(());
-        }
-        let conf = Ini::load_from_str(config).map_err(ini::Error::Parse)?;
-        Self::load_globals_from_config(&conf, globals)
     }
 
     fn load_tsg<'a>(
@@ -318,7 +348,7 @@ impl Loader {
     }
 
     fn load_builtins_into<'a>(
-        sgl: &StackGraphLanguage,
+        sgl: &StackGraphLanguage<GraphErazing<TSNodeErazing>>,
         path: &Path,
         source: Cow<'a, str>,
         config: &str,
@@ -338,37 +368,24 @@ impl Loader {
             })?;
         return Ok(());
     }
-
-    fn load_globals_from_config(
-        conf: &Ini,
-        globals: &mut Variables,
-    ) -> Result<(), LoadError<'static>> {
-        if let Some(globals_section) = conf.section(Some("globals")) {
-            for (name, value) in globals_section.iter() {
-                globals.add(name.into(), value.into()).map_err(|_| {
-                    LoadError::Reader(
-                        format!("Duplicate global variable {} in config", name).into(),
-                    )
-                })?;
-            }
-        }
-        Ok(())
-    }
 }
 
 /// Struct holding the language configurations for a file.
 #[derive(Default)]
-pub struct FileLanguageConfigurations<'a> {
+pub struct FileLanguageConfigurations<
+    'a,
+    G: Erzd = tree_sitter_graph::graph::GraphErazing<tree_sitter_graph::graph::TSNodeErazing>,
+> {
     /// The file's primary language. The language configuration's `StackGraphLanguage` should be used to process the file.
-    pub primary: Option<&'a LanguageConfiguration>,
+    pub primary: Option<&'a LanguageConfiguration<G>>,
     /// Any secondary languages, which have special file analyzers for the file.
     pub secondary: Vec<(
-        &'a LanguageConfiguration,
+        &'a LanguageConfiguration<G>,
         Arc<dyn FileAnalyzer + Send + Sync>,
     )>,
 }
 
-impl FileLanguageConfigurations<'_> {
+impl<G: Erzd> FileLanguageConfigurations<'_, G> {
     pub fn has_some(&self) -> bool {
         self.primary.is_some() || !self.secondary.is_empty()
     }
@@ -468,11 +485,11 @@ impl std::fmt::Display for DisplayLoadErrorPretty<'_> {
 // ------------------------------------------------------------------------------------------------
 // provided languages loader
 
-struct LanguageConfigurationsLoader {
-    configurations: Vec<LanguageConfiguration>,
+struct LanguageConfigurationsLoader<G: Erzd> {
+    configurations: Vec<LanguageConfiguration<G>>,
 }
 
-impl LanguageConfigurationsLoader {
+impl<'tree> LanguageConfigurationsLoader<GraphErazing<TSNodeErazing>> {
     /// Load a Tree-sitter language for the given file. Loading is based on the loader configuration and the given file path.
     /// Most users should use [`Self::load_for_file`], but this method can be useful if only the underlying Tree-sitter language
     /// is necessary, as it will not attempt to load the TSG file.
@@ -483,7 +500,7 @@ impl LanguageConfigurationsLoader {
     ) -> Result<Option<tree_sitter::Language>, LoadError<'static>> {
         for configuration in self.configurations.iter() {
             if configuration.matches_file(path, content)? {
-                return Ok(Some(configuration.language));
+                return Ok(Some(configuration.language.clone()));
             }
         }
         Ok(None)
@@ -494,7 +511,8 @@ impl LanguageConfigurationsLoader {
         &'a mut self,
         path: &Path,
         content: &mut dyn ContentProvider,
-    ) -> Result<FileLanguageConfigurations<'a>, LoadError<'static>> {
+    ) -> Result<FileLanguageConfigurations<'a, GraphErazing<TSNodeErazing>>, LoadError<'static>>
+    {
         let primary = LanguageConfiguration::best_for_file(&self.configurations, path, content)?;
         let mut secondary = Vec::new();
         for language in self.configurations.iter() {
@@ -512,16 +530,16 @@ impl LanguageConfigurationsLoader {
 // ------------------------------------------------------------------------------------------------
 // path based loader
 
-struct PathLoader {
+struct PathLoader<G: Erzd> {
     loader: SupplementedTsLoader,
     paths: Vec<PathBuf>,
     scope: Option<String>,
     tsg_paths: Vec<LoadPath>,
     builtins_paths: Vec<LoadPath>,
-    cache: Vec<(Language, LanguageConfiguration)>,
+    cache: Vec<(Language, LanguageConfiguration<G>)>,
 }
 
-impl PathLoader {
+impl<G: Erzd> PathLoader<G> {
     // Adopted from tree_sitter_loader::Loader::load
     fn config_paths(config: &TsConfig) -> Result<Vec<PathBuf>, LoadError<'static>> {
         if config.parser_directories.is_empty() {
@@ -546,14 +564,16 @@ impl PathLoader {
         }
         Ok(paths)
     }
+}
 
+impl PathLoader<GraphErazing<TSNodeErazing>> {
     pub fn load_tree_sitter_language_for_file(
         &mut self,
         path: &Path,
         content: &mut dyn ContentProvider,
     ) -> Result<Option<tree_sitter::Language>, LoadError<'static>> {
         if let Some(selected_language) = self.select_language_for_file(path, content)? {
-            return Ok(Some(selected_language.language));
+            return Ok(Some(selected_language.language.clone()));
         }
         Ok(None)
     }
@@ -563,7 +583,8 @@ impl PathLoader {
         path: &Path,
         content: &mut dyn ContentProvider,
         cancellation_flag: &dyn CancellationFlag,
-    ) -> Result<FileLanguageConfigurations<'a>, LoadError<'static>> {
+    ) -> Result<FileLanguageConfigurations<'a, GraphErazing<TSNodeErazing>>, LoadError<'static>>
+    {
         let selected_language = self.select_language_for_file(path, content)?;
         let language = match selected_language {
             Some(selected_language) => selected_language.clone(),
@@ -575,7 +596,9 @@ impl PathLoader {
             Some(index) => index,
             None => {
                 let tsg = self.load_tsg_from_paths(&language)?;
-                let sgl = StackGraphLanguage::new(language.language, tsg);
+                let mut sgl: StackGraphLanguage =
+                    StackGraphLanguage::new(language.language.clone(), tsg);
+                sgl.functions_mut().add_graph_functions();
 
                 let mut builtins = StackGraph::new();
                 self.load_builtins_from_paths_into(
@@ -585,8 +608,8 @@ impl PathLoader {
                     cancellation_flag,
                 )?;
 
-                let lc = LanguageConfiguration {
-                    language: language.language,
+                let lc = LanguageConfiguration::<GraphErazing<TSNodeErazing>> {
+                    language: language.language.clone(),
                     scope: language.scope,
                     content_regex: language.content_regex,
                     file_types: language.file_types,
@@ -596,7 +619,7 @@ impl PathLoader {
                     // always detect similar paths, we don't know the language configuration when loading from the file system
                     no_similar_paths_in_file: false,
                 };
-                self.cache.push((language.language, lc));
+                self.cache.push((language.language.clone(), lc));
 
                 self.cache.len() - 1
             }
@@ -645,12 +668,12 @@ impl PathLoader {
     }
 
     // Select language from the given path for the given file, considering scope field
-    fn select_language_for_file_from_path(
+    fn select_language_for_file_from_path<'a>(
         &mut self,
         language_path: &Path,
         file_path: &Path,
         file_content: &mut dyn ContentProvider,
-    ) -> Result<Option<&SupplementedLanguage>, LoadError> {
+    ) -> Result<Option<&SupplementedLanguage>, LoadError<'a>> {
         let scope = self.scope.as_deref();
         let languages = self.loader.languages_at_path(language_path, scope)?;
         if languages.is_empty() {
@@ -680,7 +703,7 @@ impl PathLoader {
             }
             if tsg_path.exists() {
                 let tsg_source = std::fs::read_to_string(tsg_path)?;
-                return Loader::load_tsg(language.language, Cow::from(tsg_source));
+                return Loader::load_tsg(language.language.clone(), Cow::from(tsg_source));
             }
         }
         return Err(LoadError::NoTsgFound);
@@ -689,10 +712,10 @@ impl PathLoader {
     // Builtins are loaded from queries/builtins.EXT and an optional queries/builtins.cfg configuration.
     // In the future, we may extend this to support builtins spread over multiple files queries/builtins/NAME.EXT
     // and optional corresponding configuration files queries/builtins/NAME.cfg.
-    fn load_builtins_from_paths_into(
+    fn load_builtins_from_paths_into<'a>(
         &self,
         language: &SupplementedLanguage,
-        sgl: &StackGraphLanguage,
+        sgl: &StackGraphLanguage<GraphErazing<TSNodeErazing>>,
         graph: &mut StackGraph,
         cancellation_flag: &dyn CancellationFlag,
     ) -> Result<(), LoadError<'static>> {
@@ -722,7 +745,7 @@ impl PathLoader {
     }
 
     fn load_builtins_from_path_into(
-        sgl: &StackGraphLanguage,
+        sgl: &StackGraphLanguage<GraphErazing<TSNodeErazing>>,
         builtins_path: &Path,
         graph: &mut StackGraph,
         cancellation_flag: &dyn CancellationFlag,
@@ -735,7 +758,7 @@ impl PathLoader {
         } else {
             "".into()
         };
-        Loader::load_builtins_into(
+        Loader::<GraphErazing<TSNodeErazing>>::load_builtins_into(
             sgl,
             builtins_path,
             Cow::from(source),
@@ -758,19 +781,20 @@ impl SupplementedTsLoader {
         Ok(Self(loader, HashMap::new()))
     }
 
-    pub fn languages_at_path(
+    pub fn languages_at_path<'a>(
         &mut self,
         path: &Path,
         scope: Option<&str>,
-    ) -> Result<Vec<&SupplementedLanguage>, LoadError> {
+    ) -> Result<Vec<&SupplementedLanguage>, LoadError<'a>> {
         if !self.1.contains_key(path) {
             let languages = self
                 .0
                 .languages_at_path(&path)
+                .map(|x| x.into_iter().map(|x| x.0).collect::<Vec<_>>())
                 .map_err(LoadError::TreeSitter)?;
             let configurations = self
                 .0
-                .find_language_configurations_at_path(&path)
+                .find_language_configurations_at_path(&path, true)
                 .map_err(LoadError::TreeSitter)?;
             let languages = languages
                 .into_iter()

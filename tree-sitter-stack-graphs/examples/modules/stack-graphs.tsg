@@ -120,7 +120,7 @@ attribute symbol_reference = symbol  => type = "push_symbol", symbol = symbol, i
 ;; the behavior of import statements is specified by several rules
 ;; this is done to prevent repetition but still handle different variants
 
-(import_from_statement module_name:(dotted_name (_)@name))@import {
+(import_from_statement module_name:(dotted_name (_)@name))@_import {
     ;; all components of the module name are references
     ;; where they are resolved is determined by the rules below
     node @name.ref
@@ -132,12 +132,12 @@ attribute symbol_reference = symbol  => type = "push_symbol", symbol = symbol, i
     edge @name.module_defs -> @name.ref
 }
 
-(import_from_statement module_name:(dotted_name . (_)@first_name))@import {
+(import_from_statement module_name:(dotted_name . (_)@first_name))@_import {
     ;; the first component of the module name is resolved in the root scope
     edge @first_name.ref -> ROOT_NODE
 }
 
-(import_from_statement module_name:(dotted_name (_)@left_name . (_)@right_name))@import {
+(import_from_statement module_name:(dotted_name (_)@left_name . (_)@right_name))@_import {
     ;; every following component is resolved in the previous module's members
     edge @right_name.ref -> @left_name.module_defs
 }

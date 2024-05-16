@@ -343,6 +343,7 @@ use stack_graphs::graph::File;
 use stack_graphs::graph::Node;
 use stack_graphs::graph::NodeID;
 use stack_graphs::graph::StackGraph;
+use tree_sitter_graph::MyTSNode;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -359,10 +360,14 @@ use thiserror::Error;
 use tree_sitter::Parser;
 use tree_sitter_graph::functions::Functions;
 use tree_sitter_graph::graph::Edge;
+use tree_sitter_graph::graph::Erzd;
 use tree_sitter_graph::graph::Graph;
+use tree_sitter_graph::graph::GraphErazing;
 use tree_sitter_graph::graph::GraphNode;
 use tree_sitter_graph::graph::GraphNodeRef;
+use tree_sitter_graph::graph::TSNodeErazing;
 use tree_sitter_graph::graph::Value;
+use tree_sitter_graph::graph::WithSynNodes;
 use tree_sitter_graph::parse_error::ParseError;
 use tree_sitter_graph::parse_error::TreeWithParseErrorVec;
 use tree_sitter_graph::ExecutionConfig;
@@ -440,45 +445,57 @@ static JUMP_TO_SCOPE_NODE_VAR: &'static str = "JUMP_TO_SCOPE_NODE";
 static FILE_PATH_VAR: &'static str = "FILE_PATH";
 
 /// Holds information about how to construct stack graphs for a particular language.
-pub struct StackGraphLanguage {
-    language: tree_sitter::Language,
-    tsg: tree_sitter_graph::ast::File,
+pub struct StackGraphLanguage<G: Erzd = GraphErazing<TSNodeErazing>, Q: tree_sitter_graph::GenQuery = tree_sitter::Query> {
+    language: Q::Lang,
+    tsg: tree_sitter_graph::ast::File<Q>,
     tsg_path: PathBuf,
     tsg_source: std::borrow::Cow<'static, str>,
-    functions: Functions,
+    functions: Functions<G>,
 }
 
-impl StackGraphLanguage {
+impl<G: Erzd + 'static, Q: tree_sitter_graph::GenQuery> StackGraphLanguage<G, Q>
+where
+    Q::Lang: std::fmt::Debug + Eq + Clone,
+    for<'a> G::Original<'a>: std::ops::Index<tree_sitter_graph::graph::SyntaxNodeRef>
+        + tree_sitter_graph::graph::WithSynNodes,
+    for<'a> <G::Original<'a> as std::ops::Index<tree_sitter_graph::graph::SyntaxNodeRef>>::Output:
+        tree_sitter_graph::graph::SyntaxNodeExt + Sized + std::cmp::Eq + Copy,
+{
+    fn default_functions<'a>() -> tree_sitter_graph::functions::Functions<G> {
+        let mut functions = tree_sitter_graph::functions::Functions::stdlib();
+        crate::functions::add_path_functions(&mut functions);
+        functions
+    }
+}
+
+impl<G: Erzd + 'static, Q: tree_sitter_graph::GenQuery> StackGraphLanguage<G, Q>
+where
+    Q::Lang: std::fmt::Debug + Eq + Clone,
+{
     /// Creates a new stack graph language for the given language and
     /// TSG stack graph construction rules.
-    pub fn new(
-        language: tree_sitter::Language,
-        tsg: tree_sitter_graph::ast::File,
-    ) -> StackGraphLanguage {
+    pub fn new(language: Q::Lang, tsg: tree_sitter_graph::ast::File<Q>) -> Self {
         debug_assert_eq!(language, tsg.language);
-        StackGraphLanguage {
+        Self {
             language,
             tsg,
             tsg_path: PathBuf::from("<tsg>"),
             tsg_source: Cow::from(String::new()),
-            functions: Self::default_functions(),
+            functions: Self::essential_functions(),
         }
     }
 
     /// Creates a new stack graph language for the given language, loading the
     /// TSG stack graph construction rules from a string. Keeps the source, which
     /// can later be used for [`BuildError::display_pretty`][].
-    pub fn from_str(
-        language: tree_sitter::Language,
-        tsg_source: &str,
-    ) -> Result<StackGraphLanguage, LanguageError> {
-        let tsg = tree_sitter_graph::ast::File::from_str(language, tsg_source)?;
-        Ok(StackGraphLanguage {
+    pub fn from_str(language: Q::Lang, tsg_source: &str) -> Result<Self, LanguageError> {
+        let tsg = Q::from_str(language.clone(), tsg_source)?;
+        Ok(Self {
             language,
             tsg,
             tsg_path: PathBuf::from("<missing tsg path>"),
             tsg_source: Cow::from(tsg_source.to_string()),
-            functions: Self::default_functions(),
+            functions: Self::essential_functions(),
         })
     }
 
@@ -487,10 +504,10 @@ impl StackGraphLanguage {
     /// informational purposes, and is not accessed. The source and path are kept,
     /// e.g. to use for [`BuildError::display_pretty`][].
     pub fn from_source(
-        language: tree_sitter::Language,
+        language: Q::Lang,
         tsg_path: PathBuf,
         tsg_source: &str,
-    ) -> Result<StackGraphLanguage, LanguageError> {
+    ) -> Result<Self, LanguageError> {
         let mut sgl = Self::from_str(language, tsg_source)?;
         sgl.tsg_path = tsg_path;
         Ok(sgl)
@@ -501,18 +518,27 @@ impl StackGraphLanguage {
         self.tsg_source = source;
     }
 
-    fn default_functions() -> tree_sitter_graph::functions::Functions {
+    fn essential_functions() -> tree_sitter_graph::functions::Functions<G> {
+        let mut functions = tree_sitter_graph::functions::Functions::essentials();
+        crate::functions::add_path_functions(&mut functions);
+        functions
+    }
+    fn std_functions() -> tree_sitter_graph::functions::Functions<G>
+    where
+        for<'a> G::Original<'a>: std::ops::Index<tree_sitter_graph::graph::SyntaxNodeRef> + WithSynNodes,
+        for<'a> <G::Original<'a> as std::ops::Index<tree_sitter_graph::graph::SyntaxNodeRef>>::Output:
+            tree_sitter_graph::graph::SyntaxNodeExt + Sized + std::cmp::Eq + Copy, {
         let mut functions = tree_sitter_graph::functions::Functions::stdlib();
         crate::functions::add_path_functions(&mut functions);
         functions
     }
 
-    pub fn functions_mut(&mut self) -> &mut tree_sitter_graph::functions::Functions {
+    pub fn functions_mut(&mut self) -> &mut tree_sitter_graph::functions::Functions<G> {
         &mut self.functions
     }
 
-    pub fn language(&self) -> tree_sitter::Language {
-        self.language
+    pub fn language(&self) -> &Q::Lang {
+        &self.language
     }
 
     /// Returns the original TSG path, if it was provided at construction or set with
@@ -547,7 +573,7 @@ impl LanguageError {
     }
 }
 
-impl StackGraphLanguage {
+impl<'tree> StackGraphLanguage<GraphErazing<TSNodeErazing>> {
     /// Executes the graph construction rules for this language against a source file, creating new
     /// nodes and edges in `stack_graph`.  Any new nodes that we create will belong to `file`.
     /// (The source file must be implemented in this language, otherwise you'll probably get a
@@ -563,7 +589,9 @@ impl StackGraphLanguage {
         self.builder_into_stack_graph(stack_graph, file, source)
             .build(globals, cancellation_flag)
     }
+}
 
+impl<G: Default + Erzd> StackGraphLanguage<G> {
     /// Create a builder that will execute the graph construction rules for this language against
     /// a source file, creating new nodes and edges in `stack_graph`.  Any new nodes created during
     /// execution will belong to `file`.  (The source file must be implemented in this language,
@@ -573,25 +601,28 @@ impl StackGraphLanguage {
         stack_graph: &'a mut StackGraph,
         file: Handle<File>,
         source: &'a str,
-    ) -> Builder<'a> {
+    ) -> Builder<'a, G::Original<'a>>
+    where
+        <G as Erzd>::Original<'a>: WithSynNodes<LErazing = G> + Default,
+    {
         Builder::new(self, stack_graph, file, source)
     }
 }
 
-pub struct Builder<'a> {
-    sgl: &'a StackGraphLanguage,
+pub struct Builder<'a, G: WithSynNodes = Graph<MyTSNode<'a>>> {
+    sgl: &'a StackGraphLanguage<G::LErazing>,
     stack_graph: &'a mut StackGraph,
     file: Handle<File>,
     source: &'a str,
-    graph: Graph<'a>,
+    graph: G,
     remapped_nodes: HashMap<usize, NodeID>,
     injected_node_count: usize,
     span_calculator: SpanCalculator<'a>,
 }
 
-impl<'a> Builder<'a> {
+impl<'a, G: Default + WithSynNodes> Builder<'a, G> {
     fn new(
-        sgl: &'a StackGraphLanguage,
+        sgl: &'a StackGraphLanguage<G::LErazing>,
         stack_graph: &'a mut StackGraph,
         file: Handle<File>,
         source: &'a str,
@@ -602,13 +633,15 @@ impl<'a> Builder<'a> {
             stack_graph,
             file,
             source,
-            graph: Graph::new(),
+            graph: Default::default(),
             remapped_nodes: HashMap::new(),
             injected_node_count: 0,
             span_calculator,
         }
     }
+}
 
+impl<'a> Builder<'a> {
     /// Executes this builder.
     pub fn build(
         mut self,
@@ -617,7 +650,7 @@ impl<'a> Builder<'a> {
     ) -> Result<(), BuildError> {
         let tree = {
             let mut parser = Parser::new();
-            parser.set_language(self.sgl.language)?;
+            parser.set_language(&self.sgl.language)?;
             let ts_cancellation_flag = TreeSitterCancellationFlag::from(cancellation_flag);
             // The parser.set_cancellation_flag` is unsafe, because it does not tie the
             // lifetime of the parser to the lifetime of the cancellation flag in any way.
@@ -1218,7 +1251,9 @@ impl<'a> Builder<'a> {
         }
         Ok(())
     }
+}
 
+impl<'a, G: WithSynNodes> Builder<'a, G> {
     fn load_edge_debug_info(
         stack_graph: &mut StackGraph,
         source_handle: Handle<Node>,

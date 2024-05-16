@@ -294,6 +294,7 @@ pub mod provided_languages {
     use std::path::PathBuf;
 
     use clap::Subcommand;
+    use tree_sitter_graph::graph::{GraphErazing, TSNodeErazing};
 
     use crate::cli::clean::CleanArgs;
     use crate::cli::database::DatabaseArgs;
@@ -329,7 +330,7 @@ pub mod provided_languages {
         pub fn run(
             self,
             default_db_path: PathBuf,
-            configurations: Vec<LanguageConfiguration>,
+            configurations: Vec<LanguageConfiguration<GraphErazing<TSNodeErazing>>>,
         ) -> anyhow::Result<()> {
             match self {
                 Self::Clean(cmd) => cmd.run(default_db_path),
@@ -378,7 +379,7 @@ pub mod provided_languages {
         pub fn run(
             self,
             default_db_path: PathBuf,
-            configurations: Vec<LanguageConfiguration>,
+            configurations: Vec<LanguageConfiguration<GraphErazing<TSNodeErazing>>>,
         ) -> anyhow::Result<()> {
             let loader = self.load_args.get(configurations)?;
             let db_path = self.db_args.get_or(default_db_path);
@@ -416,7 +417,7 @@ pub mod provided_languages {
         pub fn run(
             self,
             default_db_path: PathBuf,
-            configurations: Vec<LanguageConfiguration>,
+            configurations: Vec<LanguageConfiguration<GraphErazing<TSNodeErazing>>>,
         ) -> anyhow::Result<()> {
             let loader = self.load_args.get(configurations)?;
             let db_path = self.db_args.get_or(default_db_path);
@@ -434,7 +435,7 @@ pub mod provided_languages {
     }
 
     impl Match {
-        pub fn run(self, configurations: Vec<LanguageConfiguration>) -> anyhow::Result<()> {
+        pub fn run(self, configurations: Vec<LanguageConfiguration<GraphErazing<TSNodeErazing>>>) -> anyhow::Result<()> {
             let loader = self.load_args.get(configurations)?;
             self.match_args.run(loader)
         }
@@ -450,7 +451,7 @@ pub mod provided_languages {
     }
 
     impl Parse {
-        pub fn run(self, configurations: Vec<LanguageConfiguration>) -> anyhow::Result<()> {
+        pub fn run(self, configurations: Vec<LanguageConfiguration<GraphErazing<TSNodeErazing>>>) -> anyhow::Result<()> {
             let loader = self.load_args.get(configurations)?;
             self.parse_args.run(loader)
         }
@@ -498,7 +499,7 @@ pub mod provided_languages {
     }
 
     impl Test {
-        pub fn run(self, configurations: Vec<LanguageConfiguration>) -> anyhow::Result<()> {
+        pub fn run(self, configurations: Vec<LanguageConfiguration<GraphErazing<TSNodeErazing>>>) -> anyhow::Result<()> {
             let loader = self.load_args.get(configurations)?;
             self.test_args.run(loader)
         }

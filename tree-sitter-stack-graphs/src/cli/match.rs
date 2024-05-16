@@ -9,15 +9,16 @@ use anyhow::anyhow;
 use clap::Args;
 use clap::ValueHint;
 use colored::Colorize;
+use tree_sitter_graph::MyTSNode;
 use std::path::Path;
 use std::path::PathBuf;
 use tree_sitter::CaptureQuantifier;
-use tree_sitter::Node;
 
 use crate::cli::parse::parse;
 use crate::cli::parse::print_node;
 use crate::cli::util::ExistingPathBufValueParser;
 use crate::loader::FileReader;
+use crate::loader::LanguageConfiguration;
 use crate::loader::Loader;
 use crate::NoCancellation;
 
@@ -41,7 +42,7 @@ pub struct MatchArgs {
 impl MatchArgs {
     pub fn run(self, mut loader: Loader) -> anyhow::Result<()> {
         let mut file_reader = FileReader::new();
-        let lc = match loader
+        let lc: &LanguageConfiguration = match loader
             .load_for_file(&self.source_path, &mut file_reader, &NoCancellation)?
             .primary
         {
@@ -49,7 +50,7 @@ impl MatchArgs {
             None => return Err(anyhow!("No stack graph language found")),
         };
         let source = file_reader.get(&self.source_path)?;
-        let tree = parse(lc.language, &self.source_path, source)?;
+        let tree = parse(&lc.language, &self.source_path, source)?;
         if self.stanza.is_empty() {
             lc.sgl.tsg.try_visit_matches(&tree, source, true, |mat| {
                 print_matches(lc.sgl.tsg_path(), &self.source_path, source, mat)
@@ -78,7 +79,7 @@ fn print_matches(
     tsg_path: &Path,
     source_path: &Path,
     source: &str,
-    mat: tree_sitter_graph::Match,
+    mat: tree_sitter_graph::Match<tree_sitter_graph::MyQueryMatch<'_,'_>>,
 ) -> anyhow::Result<()> {
     println!(
         "{}: stanza query",
@@ -126,7 +127,7 @@ fn print_matches(
     Ok(())
 }
 
-fn print_node_text(node: Node, source_path: &Path, source: &str) -> anyhow::Result<()> {
+fn print_node_text(node: MyTSNode, source_path: &Path, source: &str) -> anyhow::Result<()> {
     const MAX_TEXT_LENGTH: usize = 16;
 
     print!(", text: \"");

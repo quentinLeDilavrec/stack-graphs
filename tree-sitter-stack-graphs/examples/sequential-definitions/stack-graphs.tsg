@@ -36,7 +36,7 @@ attribute node_symbol = node     => symbol = (source-text node), source_node = n
     node @mod.lexical_scope
 }
 
-(module (_)@left_stmt . (_)@right_stmt)@mod {
+(module (_)@left_stmt . (_)@right_stmt)@_mod {
     ;; Every statements in the module can reach all definitions from previous statements in the module
     edge @right_stmt.lexical_scope -> @left_stmt.lexical_scope
 

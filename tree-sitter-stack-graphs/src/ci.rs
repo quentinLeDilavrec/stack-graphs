@@ -30,26 +30,42 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use tree_sitter_graph::graph::Erzd;
+
 use crate::cli::test::TestArgs;
 use crate::loader::{LanguageConfiguration, Loader};
 
 /// Run tests for the given languages. Test locations are reported relative to the current directory, which
 /// results in better readable output when build tools only provides absolute test paths.
-pub struct Tester {
-    configurations: Vec<LanguageConfiguration>,
+pub struct Tester<G: Erzd> {
+    configurations: Vec<LanguageConfiguration<G>>,
     test_paths: Vec<PathBuf>,
     pub max_test_time: Option<Duration>,
 }
 
-impl Tester {
-    pub fn new(configurations: Vec<LanguageConfiguration>, test_paths: Vec<PathBuf>) -> Self {
+impl<G: Erzd> Tester<G> {
+    pub fn new(configurations: Vec<LanguageConfiguration<G>>, test_paths: Vec<PathBuf>) -> Self {
         Self {
             configurations,
             test_paths,
             max_test_time: Some(Duration::from_secs(60)),
         }
     }
+}
 
+impl<G: Erzd> Tester<G> {
+    pub fn generic(
+        configurations: Vec<LanguageConfiguration<G>>,
+        test_paths: Vec<PathBuf>,
+    ) -> Self {
+        Self {
+            configurations,
+            test_paths,
+            max_test_time: Some(Duration::from_secs(60)),
+        }
+    }
+}
+impl Tester<tree_sitter_graph::graph::GraphErazing<tree_sitter_graph::graph::TSNodeErazing>> {
     pub fn run(self) -> anyhow::Result<()> {
         let test_paths = self
             .test_paths
